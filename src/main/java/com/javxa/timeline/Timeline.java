@@ -1,57 +1,77 @@
 package com.javxa.timeline;
 
-import java.util.LinkedList;
-import java.util.ListIterator;
-import java.util.Objects;
+import java.util.HashMap;
+import java.util.Map;
 import lombok.AccessLevel;
-import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-@RequiredArgsConstructor(access = AccessLevel.PACKAGE)
-class Timeline {
+@RequiredArgsConstructor(access = AccessLevel.PRIVATE)
+public class Timeline {
 
-    final Runnable runnable;
-    final LinkedList<Boolean> foundDivergences = new LinkedList<>();
-    ListIterator<Boolean> traveler;
-    @Getter
-    private int currentTimelineIndex = 0;
+    private static final Map<Thread, TimelineTracker> timelines = new HashMap<>();
 
-    boolean diverge() {
-        if (traveler.hasNext()) {
-            return traveler.next();
+    public static boolean begin(Runnable runnable) {
+
+        Thread currentThread = Thread.currentThread();
+
+        TimelineTracker timelineTracker = timelines.get(currentThread);
+
+        if (timelineTracker != null) {
+            return false;
         }
-        traveler.add(true);
+
+        timelineTracker = new TimelineTracker(runnable);
+        timelines.put(currentThread, timelineTracker);
+
+        timelineTracker.start();
+
+        timelines.remove(currentThread);
         return true;
     }
 
-    void start() {
-        currentTimelineIndex = -1;
-        do {
-            currentTimelineIndex++;
-
-            log.info("");
-            log.info("Starting timeline " + (currentTimelineIndex + 1));
-
-            traveler = foundDivergences.listIterator();
-            runnable.run();
-            prepare();
-        } while(!foundDivergences.isEmpty());
-
-        log.info("");
-        log.info("All timelines explored" );
+    private static TimelineTracker requireTimeline() {
+        TimelineTracker timelineTracker = timelines.get(Thread.currentThread());
+        if (timelineTracker == null) throw new IllegalStateException("No timeline has been initialized");
+        return timelineTracker;
     }
 
-    private void prepare() {
-        while( !foundDivergences.isEmpty() && Objects.equals(false, foundDivergences.getLast())) {
-            foundDivergences.removeLast();
+    public static boolean diverge() {
+        return requireTimeline().diverge();
+    }
+
+    public static boolean diverge(String branchName) {
+        return diverge(branchName, null);
+    }
+
+    public static boolean diverge(String branchName, String elseName) {
+        if (diverge()) {
+            if (branchName != null) log.info("Branching into: " + branchName);
+            return true;
         }
 
-        if (foundDivergences.isEmpty()) return;
+        if (elseName != null) log.info("Branching into: " + elseName);
+        return false;
+    }
 
-        foundDivergences.removeLast();
-        foundDivergences.add(false);
+    static int index() {
+        return requireTimeline().getCurrentTimelineIndex();
+    }
+
+    public static <T extends Enum<T>> T forEachEnum(Class<T> clazz) {
+        return forEach(clazz.getEnumConstants());
+    }
+
+    public static <T> T forEach(T[] values) {
+        TimelineTracker timelineTracker = requireTimeline();
+
+        for (int i = 0; i < values.length - 1; i++) {
+            if (timelineTracker.diverge())
+                return values[i];
+        }
+
+        return values[values.length - 1];
     }
 
 }
