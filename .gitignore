@@ -41,3 +41,7 @@ buildNumber.properties
 .project
 # JDT-specific (Eclipse Java Development Tools)
 .classpath
+
+sonarlint
+liquibase.properties
+application-secrets.properties
