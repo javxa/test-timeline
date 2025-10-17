@@ -9,9 +9,10 @@ import java.util.logging.Logger
 import java.util.stream.Stream
 import kotlin.streams.asStream
 
-interface TimeLineTracker {
+interface TimelineTracker {
     val timelineIndex: Int
     val branch: Boolean
+    val predictedPathName: String
 
     fun branch(name: String? = null, notifySkipped: Boolean = true): Boolean
     fun <T> branch(paths: Iterable<T>): T
@@ -21,27 +22,29 @@ interface TimeLineTracker {
 private data class BranchInfo(
     val name: String?,
     val path: Any?,
+    val prediction: Any?,
 ) {
     override fun toString(): String {
-
         val branchName = name ?: "branch"
         return "$branchName: $path"
     }
 }
 
-class TimeLineTrackerImpl(
-    private val block: TimeLineTracker.() -> Unit
-) : TimeLineTracker, Iterator<DynamicTest> {
+class TimelineTrackerImpl(
+    private val block: TimelineTracker.() -> Unit
+) : TimelineTracker, Iterator<DynamicTest> {
 
-    private val log: Logger = Logger.getLogger(TimeLineTracker::class.simpleName)
+    private val log: Logger = Logger.getLogger(TimelineTracker::class.simpleName)
 
     override val branch: Boolean
         get() = branch(notifySkipped = true)
 
     override fun branch(name: String?, notifySkipped: Boolean): Boolean {
         val next = getNextBranch()
-        if (next or notifySkipped) {
-            currentPathNames.add(BranchInfo(name, next))
+        if (next) {
+            currentPathNames.add(BranchInfo(name = name, path = true, prediction = if (notifySkipped) false else null ))
+        } else if (notifySkipped) {
+            currentPathNames.add(BranchInfo(name = name, path = false, prediction = null))
         }
         return next
     }
@@ -57,67 +60,77 @@ class TimeLineTrackerImpl(
             throw IllegalStateException("Iterable did not contain any items")
 
         while (true) {
-            val next = it.next()
+            val nextElement = it.next()
 
             if (!it.hasNext()) {
-                currentPathNames.add(BranchInfo(name, next))
-                return next
+                currentPathNames.add(BranchInfo(name = name, path = nextElement, prediction = null))
+                return nextElement
             }
 
             if (getNextBranch()) {
-                currentPathNames.add(BranchInfo(name, next))
-                return next
+                val prediction = if (it.hasNext()) it.next() else null
+                currentPathNames.add(BranchInfo(name = name, path = nextElement, prediction = prediction))
+                return nextElement
             }
         }
     }
 
     override var timelineIndex = 0
         private set
+    override var predictedPathName = "[...]"
+        private set(value) { field = "$value [...]" }
 
-    // For each traveler, the path is prepared as the one that should be followed
-    // When a traveler has reached the end, it is prepared for the next one
+    // For each traveler, the path is prepared as the one that should be followed.
+    // When a traveler has reached the end, it is prepared for the next one.
     private val paths: MutableList<Boolean> = LinkedList()
     private val currentPathNames: MutableList<BranchInfo> = LinkedList()
     private var travelerIndex = 0
 
     private fun printCurrentPath() {
         log.info(StringBuilder("\n").apply {
-            append("======[ Timeline ]=====\n")
-            append("Timeline Index: $timelineIndex\n")
+            appendLine("======[ Timeline ]======")
+            appendLine("Timeline Index: $timelineIndex")
             currentPathNames.forEach {
-                append(it).append("\n")
+                appendLine(it)
             }
-
-            append("=======================\n")
+            appendLine("========================")
         }.toString())
+    }
+
+    private fun predictNextPath() = LinkedList<BranchInfo>().apply {
+        var foundFirstPrediction = false
+        currentPathNames.reversed().forEach {
+
+            if (foundFirstPrediction) {
+                addFirst(BranchInfo(name = it.name, path = it.path, prediction = null))
+            } else if (it.prediction != null) {
+                foundFirstPrediction = true
+                addFirst(BranchInfo(name = it.name, path = it.prediction, prediction = null))
+            }
+        }
     }
 
     private fun prepareForNext() {
         // paths contain the previous travelled path
-
         // if the last branch is true, it should switch to false
-        // if the last branch is false, we should remove all last false, then switch the last true to false
+        // if the last branch is false, we should remove all trailing false, then switch the last true to false
 
         printCurrentPath()
-        currentPathNames.clear()
-
-        if (paths.isEmpty()) return
-
-        val last = paths.removeLast()
-
-        if (last) {
-            paths.add(false)
-            return
-        }
 
         while (paths.isNotEmpty() && !paths.last()) {
             paths.removeLast()
         }
 
-        if (paths.isEmpty()) return
+        if (paths.isNotEmpty()) {
+            paths.removeLast()
+            paths.add(false)
+        }
 
-        paths.removeLast()
-        paths.add(false)
+        val predictedPath = predictNextPath()
+        predictedPathName = predictedPath.joinToString(", ")
+
+        currentPathNames.clear()
+
     }
 
     private fun runNext() {
@@ -159,19 +172,18 @@ class TimeLineTrackerImpl(
     }
 
     override fun hasNext(): Boolean {
-        val hasNext = timelineIndex == 0 || paths.size > 0
-        return hasNext
+        val hasRunOnce = timelineIndex != 0
+        val hasPathsLeft = paths.size > 0
+        return !hasRunOnce || hasPathsLeft
     }
 
     override fun next(): DynamicTest {
-        return DynamicTest.dynamicTest("timeline $timelineIndex") {
+        return DynamicTest.dynamicTest(predictedPathName) {
             runNext()
         }
     }
-
 }
 
-
-fun timeline(block: TimeLineTracker.() -> Unit): Stream<DynamicTest> {
-    return TimeLineTrackerImpl(block).asSequence().asStream()
+fun timeline(block: TimelineTracker.() -> Unit): Stream<DynamicTest> {
+    return TimelineTrackerImpl(block).asSequence().asStream()
 }
